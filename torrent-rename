@@ -1,0 +1,412 @@
+#!/usr/bin/python2
+# coding: UTF-8
+
+import sys
+import os
+import shutil
+import re
+import json
+import urllib2
+import string
+import logging
+import logging.handlers
+import atexit
+import subprocess
+
+
+try:
+	_, torrentid, torrentname, torrentpath = sys.argv
+	print torrentid, torrentname, torrentpath
+except ValueError:
+	pass
+
+
+class BufferingSMTPHandler(logging.handlers.BufferingHandler):
+	def __init__(self, mailhost, fromaddr, toaddrs, subject, capacity):
+		logging.handlers.BufferingHandler.__init__(self, capacity)
+		self.mailhost = mailhost
+		self.mailport = None
+		self.fromaddr = fromaddr
+		self.toaddrs = toaddrs
+		self.subject = subject
+		self.setFormatter(logging.Formatter("%(asctime)s %(levelname)-5s %(message)s"))
+
+	def flush(self):
+		if len(self.buffer) > 0:
+			try:
+				import smtplib
+				port = self.mailport
+				if not port:
+					port = smtplib.SMTP_PORT
+				smtp = smtplib.SMTP(self.mailhost, port)
+				msg = "From: %s\r\nTo: %s\r\nSubject: %s\r\n\r\n" % (self.fromaddr, string.join(self.toaddrs, ","), self.subject)
+				for record in self.buffer:
+					s = self.format(record)
+					print s
+					msg = msg + s + "\r\n"
+				smtp.sendmail(self.fromaddr, self.toaddrs, msg)
+				smtp.quit()
+			except Exception, exc:
+				raise
+				print exc
+				self.handleError(None)  # no particular record
+			self.buffer = []
+
+
+logger = logging.getLogger("torrent-rename")
+logger.setLevel(logging.DEBUG)
+
+# This handler emails me anything that is an error or worse.
+mailhandler = BufferingSMTPHandler('localhost', 'cmiller@zippy.cornsilk.net', ['root@zippy.cornsilk.net'], 'torrent-rename abnormal events', 500)
+mailhandler.setLevel(logging.INFO)
+logformatter = logging.Formatter("line%(lineno)d %(message)s")
+mailhandler.setFormatter(logformatter)
+logger.addHandler(mailhandler)
+
+stdouthandler = logging.StreamHandler(stream=sys.stdout)
+logger.addHandler(stdouthandler)
+
+atexit.register(logging.shutdown)
+
+
+quash = ("hdtv", "x264", "avc", "dvdrip", "brrip", "mpeg-4", "[vtv]", "xvid-", "480p", "720i", "720p", "1080i", "1080p", "ws", "pdtv", "4od", "dvdscr", "albiondean", "merry xmas", "bdrip", "repack", "bluray", "proper", "yify", "dvd", "complete", "dvdrip", "linkzkraze", "tvblinkz", "tvboom", "hdtv-", "webrip", "boxxx", "remastered", "www", "rarbg", "etrg", "uncut")
+
+year = re.compile(r"\b((?:19|20)\d\d)\b")
+ep = re.compile(r"\b(?:S(\d\d?)E(\d\d?)|(\d\d?)x(\d\d?))\b", re.I)
+
+kept_extensions = set((".avi", ".mov", ".mkv", ".ogv", ".m4v", ".mp4", ".srt", ".smi", ".3gp", ".ts"))
+
+class ConsistencyError(ValueError): pass
+
+
+def smart_title(s):
+	"""
+	>>> smart_title("the of by")
+	'The of by'
+	>>> smart_title("HoUnd  spaceSpace ")
+	'Hound Spacespace'
+	>>> smart_title("")
+	''
+	>>> smart_title("01EST")
+	'01est'
+	>>> smart_title("TeSt (s01e99), other")
+	'Test (s01e99), Other'
+	>>> smart_title("Elmentary (2019) (s01e99)")
+	'Elementary (2019) (s01e99)'
+	>>> smart_title("(s06e11) (s06e12)")
+	'(s06e11) (s06e12)'
+	"""
+	pieces = re.split(r"\s+", s)
+	result = list()
+	for i, p in enumerate(pieces):
+		if not p: continue
+		lc = p.lower()
+		if i != 0:
+			if result[-1][-1] in string.lowercase:
+				if (lc in ("the", "of", "a", "from", "and", "but", "for", "nor", "or", "to", "by", "at")):
+					result.append(lc)
+					continue
+		result.append(lc[0].upper() + lc[1:])
+	return " ".join(result).replace("Elmentary ", "Elementary ")
+
+
+def reformat(filename):
+	"""
+	Year always first because it's part of the name, then episode or season info.
+
+	>>> reformat('Welcome.to.Sweden.2014.S01E09.HDTV.XviD-AFG.avi')
+	('Welcome to Sweden (2014)/Welcome to Sweden (2014) (s01e09).avi', '.avi')
+	>>> reformat('Doctor Who (S40E05).mkv')
+	('Doctor Who (2005)/Doctor Who (2005) (s40e05).mkv', '.mkv')
+	>>> reformat('Rubicon (S01E05), Connect The Dots.avi')
+	('Rubicon/Rubicon (s01e05) Connect the Dots.avi', '.avi')
+	>>> reformat('Top Gear (S05E05) (2004-11-21).avi')
+	('Top Gear/Top Gear (2004-11-21) (s05e05).avi', '.avi')
+	>>> reformat('Food Inc (2008).avi')
+	('Food Inc (2008)/Food Inc (2008).avi', '.avi')
+	>>> reformat('Top Gear (S05E10) 2005-01-02, The Best Of Season 5.avi')
+	('Top Gear/Top Gear (2005-01-02) (s05e10) The Best of Season 5.avi', '.avi')
+	>>> reformat('Rubicon.S01E01.Pilot.HDTV.XviD-FQM.avi')
+	('Rubicon/Rubicon (s01e01) Pilot.avi', '.avi')
+	>>> reformat('Rubicon.S01E11.A.Good.Days.Work.HDTV.XviD-FQM.[VTV].avi')
+	('Rubicon/Rubicon (s01e11) A Good Days Work.avi', '.avi')
+	>>> reformat("Rubicon (s01e11), A Good Day's Work.avi")
+	("Rubicon/Rubicon (s01e11) A Good Day's Work.avi", '.avi')
+	>>> reformat("Doctor Who (2005) A Christmas Carol 2010 Special.mkv")
+	('Doctor Who (2005)/Doctor Who (2005) A Christmas Carol 2010 Special.mkv', '.mkv')
+	>>> reformat("The.Direct.Article.1.avi")
+	('The Direct Article 1/The Direct Article 1.avi', '.avi')
+	>>> reformat("Dr. Horrible.Act.1.avi")
+	('Dr. Horrible Act 1/Dr. Horrible Act 1.avi', '.avi')
+	>>> reformat("Justified Season 1 Episode 13 Bulletville.avi")
+	('Justified/Justified (s01e13) Bulletville.avi', '.avi')
+	>>> reformat("Star Trek The Next Generation Season 3 Episode 21- Hollow Pursuits.avi")
+	('Star Trek the Next Generation/Star Trek the Next Generation (s03e21) Hollow Pursuits.avi', '.avi')
+	>>> reformat("The.Colbert.Report.2012.04.11.Michelle.Obama.HDTV.XviD-FQM.[VTV].avi")
+	('The Colbert Report/The Colbert Report (2012-04-11) Michelle Obama.avi', '.avi')
+	>>> reformat("Community Season 2, Episode 06 – Epidemiology - LinkzKraze.mp4")
+	('Community/Community (s02e06) Epidemiology.mp4', '.mp4')
+	>>> reformat("glee.404.hdtv-lol.mp4")
+	('Glee/Glee (s04e04).mp4', '.mp4')
+	>>> reformat("The Big Bang Theory 605 Hdtv-lol.mp4")
+	('The Big Bang Theory/The Big Bang Theory (s06e05).mp4', '.mp4')
+	>>> reformat("Archer - 2E11 - Jeu Monegasque.mkv")
+	('Archer/Archer (s02e11) Jeu Monegasque.mkv', '.mkv')
+	>>> reformat("Burn.Notice.S06E11E12.HDTV.x264-2HD.[VTV].mp4")
+	('Burn Notice/Burn Notice (s06e11) (s06e12).mp4', '.mp4')
+	>>> reformat("Star Trek - The Next Generation- S01 E01+2-Encounter at Fairpoint.mp4")
+	('Star Trek the Next Generation/Star Trek the Next Generation (s01e01) (s01e02) Encounter at Fairpoint.mp4', '.mp4')
+	>>> reformat('The.Powerpuff.Girls.S06.E07.Crazy.Mixed.Up.Puffs-Mizzen.In.Action-[boxXx].mkv')
+	('The Powerpuff Girls/The Powerpuff Girls (s06e07) Crazy Mixed Up Puffs-mizzen In Action.mkv', '.mkv')
+	>>> reformat('Rockford_Files-S03xE15-The_Trees_The_Bees_And_TT_Flowers_Part_2.avi')
+	('Rockford Files/Rockford Files (s03e15) The Trees the Bees and Tt Flowers Part 2.avi', '.avi')
+	>>> reformat('My Neighbor Totoro.mp4')
+	('My Neighbor Totoro/My Neighbor Totoro.mp4', '.mp4')
+	>>> reformat('My Neighbor Totoro.srt')
+	('My Neighbor Totoro/My Neighbor Totoro.srt', '.srt')
+	>>> reformat('My Neighbor Totoro.srt')
+	('My Neighbor Totoro/My Neighbor Totoro.srt', '.srt')
+	"""
+
+	already_dated = False
+	assert os.sep not in filename
+	fragments = list()
+	times = list()
+	basename, extension = os.path.splitext(filename)
+
+	want_container = True
+	container_pieces = list()
+	container_finished = False
+
+	b = basename
+	# S01 E01+2
+	basename = re.sub(r"(?i)(?<=\w)-\s+", r" ", basename)
+
+	basename = re.sub(r"(?i)\b(\S\d+)\s+(E\d+)\s*\+?\s*(\d+)\b", r"\1\2E\3 ", basename)
+	basename = re.sub(r"(?i)\b(\S\d+)\s+(E\d+)-?\b", r"(\1\2)", basename)
+	basename = re.sub(r"(?i)\bseason\s?(\d+),?\s?episode\s?(\d+)-*", r"(s\1e\2)", basename)
+	basename = re.sub(r"(?i)\bseason\s?(\d+),?\s?show\s?(\d+)", r"(s\1e\2)", basename)
+	basename = re.sub(r"\b(2\d\d\d)\.(\d\d?)\.(\d\d?)\b", r"\1-\2-\3", basename)
+	basename = re.sub(r"(?i)(?<=\))-(?=\w)", r" ", basename)
+	basename = re.sub(r"(?i)(?<=\s)-(?=\w)", r"", basename)
+	basename = re.sub(r"(?i)\b(\d+)E(\d\d)\b", r"s\1e\2 ", basename)
+	basename = re.sub(r"(?i)\bs(\d+)\.E(\d\d)\b", r"s\1e\2 ", basename)
+	basename = re.sub(r"(?i)-s(\d+)x?e(\d+)-", r" s\1e\2 ", basename)
+	if b != basename:
+		want_container = True
+
+	basename = re.sub(r"(?i)\.US\.", r".", basename)
+
+	for piece in re.split(r"\.(?! )| +|_|\[|\]", basename):
+		was_time = False
+		if piece.endswith(","):
+			piece = piece[:-1]
+
+		if piece == "-": continue
+		if piece == "–": continue
+		if not piece.strip(): continue
+		if piece.lower().startswith(quash):
+			break
+
+		if piece.lower() == "dvdscr":
+			fragments.append("(screener)")
+			break
+
+		m = re.match(r"(?i)^\(S(\d+)E(\d+)\)$", piece)
+		if m:
+			want_container = True
+			container_finished = True
+			times.append("s%02de%02d" % (int(m.group(1)), int(m.group(2))))
+			was_time = True
+		m = re.match(r"(?i)^S(\d+)E(\d+)-?E(\d+)$", piece)
+		if m:
+			want_container = True
+			container_finished = True
+			times.append("s%02de%02d" % (int(m.group(1)), int(m.group(3))))
+			times.append("s%02de%02d" % (int(m.group(1)), int(m.group(2))))
+			was_time = True
+		m = re.match(r"(?i)^S(\d+)E(\d+)$", piece)
+		if m:
+			want_container = True
+			container_finished = True
+			times.append("s%02de%02d" % (int(m.group(1)), int(m.group(2))))
+			was_time = True
+		m = re.match(r"(?i)^S(\d+)$", piece)
+		if m:
+			want_container = True
+			container_finished = True
+			times.append("s%02d" % (int(m.group(1)),))
+			was_time = True
+		m = re.match(r"(?i)^E(\d+)$", piece)
+		if m:
+			want_container = True
+			container_finished = True
+			times.append("e%02d" % (int(m.group(1)),))
+			was_time = True
+		m = re.match(r"^(\d)(\d\d)$", piece)
+		if m:
+			if fragments and m.group(1)+m.group(2) != "720":
+				want_container = True
+				container_finished = True
+				times.append("s%02de%02d" % (int(m.group(1)), int(m.group(2))))
+				was_time = True
+			else:
+				pass  # let fragments catch
+				
+		m = re.match(r"^(\d+)x(\d+)$", piece)
+		if m:
+			want_container = True
+			container_finished = True
+			times.append("s%02de%02d" % (int(m.group(1)), int(m.group(2))))
+			was_time = True
+		m = re.match(r"^\(((?:201|200|19\d)\d)\)$", piece)
+		if m and not already_dated:
+			want_container = True
+			container_finished = True
+			container_pieces.append("(" + m.group(1) + ")")
+			times.append("%04d" % (int(m.group(1)),))
+			was_time = True
+			already_dated = True
+		m = re.match(r"^((?:201|200|19\d)\d)$", piece)
+		if m and not already_dated:
+			want_container = True
+			container_finished = True
+			container_pieces.append("(" + m.group(1) + ")")
+			times.append("%04d" % (int(m.group(1)),))
+			was_time = True
+			already_dated = True
+		m = re.match("^\(((?:201|200|19\d)\d).([01]\d).([0123]\d)\)$", piece)
+		if m and not already_dated:
+			want_container = True
+			container_finished = True
+			times.append("%s-%s-%s" % (m.group(1), m.group(2), m.group(3)))
+			#container_pieces.append("(" + m.group(1) + ")")
+			was_time = True
+			already_dated = True
+		m = re.match("^((?:201|200|19\d)\d).([01]\d).([0123]\d)$", piece)
+		if m and not already_dated:
+			want_container = True
+			container_finished = True
+			times.append("%s-%s-%s" % (m.group(1), m.group(2), m.group(3)))
+			#container_pieces.append("(" + m.group(1) + ")")
+			was_time = True
+			already_dated = True
+		
+		if times:
+			if not was_time:
+				fragments.append("(" + ") (".join(sorted(times)) + ")")
+				times = list()
+				fragments.append(piece)
+			continue
+		
+		fragments.append(piece)
+		if not container_finished:
+			container_pieces.append(piece)
+
+	basename = smart_title(" ".join(fragments)).strip("-")
+	dirs = os.listdir("/data/movies-and-television/torrents")
+	candidates = sorted((d for d in dirs if basename in d), key=lambda s: (-len(s), s))
+	
+	if candidates and candidates[0] != basename:
+		basename = candidates[0]
+		y = basename.split()[-1]
+		if y not in container_pieces:
+			container_pieces.append(basename.split()[-1])
+
+	if times:
+		for time in sorted(times):
+			if time not in basename:
+				basename += " (" + time + ")"
+	
+	if want_container:
+		return smart_title(" ".join(container_pieces)) + "/" + basename + extension.lower(), extension.lower()
+	else:
+		return basename + extension.lower(), extension.lower()
+
+
+def rename(dummy, container, filenames):
+	assert container.startswith("/data/%downloaded-unsorted")
+
+	unrooted_container = container[len("/data/%downloaded-unsorted")+1:]
+
+	imdbttid = None
+	nfo_file_contents = None
+
+	if unrooted_container.startswith("imdb-tt"):
+		first_slash_position = unrooted_container.find("/")
+		if first_slash_position == -1:
+			imdbttid = int(unrooted_container[8:])
+		else:
+			imdbttid = int(unrooted_container[8:first_slash_position])
+		nfo_file_contents = """<tvshow>\n<id moviedb="imdb">tt{}</id>\n</tvshow>""".format(imdbttid)
+
+	for filename in filenames:
+		try:
+			if os.path.isfile(os.path.join(container, filename)):
+				if "trailer" in filename.lower():
+					logger.debug("should remove %r", filename)
+					continue
+				if "sample" in filename.lower():
+					logger.debug("should remove %r", filename)
+					continue
+				new_filename, extension = reformat(filename)
+
+				consistency = reformat(os.path.basename(new_filename))[0]
+				if new_filename != consistency:
+					raise ConsistencyError(new_filename + " != " + consistency +" // " + filename)
+
+				src = os.path.join(container, filename)
+				# FIXME set dst with show name
+				dst = os.path.join("/data/movies-and-television/torrents", new_filename)
+
+				if extension not in kept_extensions:
+					continue
+
+				if src == dst:
+					continue
+
+				if os.sep not in new_filename:
+					if os.path.exists(dst):
+						logger.debug("Weird file %s   (AND REMOVING!)", filename)
+						os.remove(dst)
+						continue
+					else:
+						logger.debug("Just a file %s", new_filename)
+
+				if not os.path.exists(dst):
+
+					try:
+						os.mkdir(os.path.dirname(dst))
+					except OSError:
+						pass
+					try:
+						if nfo_file_contents and re.search(r"\s\(s\d\de\d\d\)", dst):
+							nfo_file = os.path.join(os.path.dirname(dst), "tvshow.nfo")
+							if not os.path.exists(nfo_file):
+								with open(nfo_file, "w") as f:
+									f.write(nfo_file_contents)
+									logger.debug("Wrote new tvshow nfo file near " + dst)
+						os.link(src, dst)
+					except OSError, exc:
+						logger.warn("# couldn't link %s", (dst,))
+						raise
+						pass
+
+		except ConsistencyError, ex:
+			pass
+			#logger.warn("ignoring inconsistent name, %s", ex)
+			
+
+import doctest
+if doctest.testmod().failed > 0:
+	raise ValueError("Test errors")
+
+try:
+	os.path.walk("/data/%downloaded-unsorted", rename, None)
+except Exception, ex:
+	logger.exception("failed to complete")
+	raise
+
+
+subprocess.call(["find", "/data/movies-and-television/torrents", "-type", "f", "-ctime", "+180", "-print", "-delete"])
+subprocess.call(["find", "/data/%downloaded-unsorted/", "-type", "f", "-links", "1", "-ctime", "+60", "-print", "-delete"])
