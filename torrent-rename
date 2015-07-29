@@ -137,7 +137,7 @@ def reformat(filename):
 	>>> reformat("The.Direct.Article.1.avi")
 	('The Direct Article 1/The Direct Article 1.avi', '.avi')
 	>>> reformat("Dr. Horrible.Act.1.avi")
-	('Dr. Horrible Act 1/Dr. Horrible Act 1.avi', '.avi')
+	('Dr Horrible Act 1/Dr Horrible Act 1.avi', '.avi')
 	>>> reformat("Justified Season 1 Episode 13 Bulletville.avi")
 	('Justified/Justified (s01e13) Bulletville.avi', '.avi')
 	>>> reformat("Star Trek The Next Generation Season 3 Episode 21- Hollow Pursuits.avi")
@@ -166,6 +166,10 @@ def reformat(filename):
 	('My Neighbor Totoro/My Neighbor Totoro.srt', '.srt')
 	>>> reformat('My Neighbor Totoro.srt')
 	('My Neighbor Totoro/My Neighbor Totoro.srt', '.srt')
+	>>> reformat('Stargate.SG-1.S08E08.WS.DVDRip.XviD-RiVER.avi')
+	('Stargate Sg1/Stargate Sg1 (s08e08).avi', '.avi')
+	>>> reformat('penn.and.teller.fool.us.s02e01.phone.y.business.hdtv.x264.mp4')
+	('Penn and Teller Fool Us/Penn and Teller Fool Us (s02e01) Phone Y Business.mp4', '.mp4')
 	"""
 
 	already_dated = False
@@ -195,9 +199,10 @@ def reformat(filename):
 	if b != basename:
 		want_container = True
 
-	basename = re.sub(r"(?i)\.US\.", r".", basename)
+	basename = re.sub(r"\.US\.", r".", basename)
+	basename = re.sub(r"([a-zA-Z])-(\d+)\b", r"\1\2", basename)
 
-	for piece in re.split(r"\.(?! )| +|_|\[|\]", basename):
+	for piece in re.split(r"\.| +|_|\[|\]", basename):
 		was_time = False
 		if piece.endswith(","):
 			piece = piece[:-1]
