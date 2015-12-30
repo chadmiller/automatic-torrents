@@ -15,10 +15,6 @@ from io import StringIO, BytesIO
 import time
 
 
-# I watch for problems with my dead-man's switch. This could be noisy. I just
-# look for periods of not working. 
-os.environ["dmsid"]  # pass  dmsid=NNN  in environment.  Get it from http://dms.chad.org/
-
 class SearchEngineIsDumb(Exception): """Ugly flow-control for troublesome search sites."""
 
 def alarm(n):
@@ -76,7 +72,7 @@ def search(show, season, episode, retry=5):
                     continue
 
                 try:
-                    soup = bs4.BeautifulSoup(response, from_encoding="UTF-8")
+                    soup = bs4.BeautifulSoup(response, "lxml", from_encoding="UTF-8")
                 except socket.timeout as exc:
                     if retry < 1:
                         raise SearchEngineIsDumb(exc)
@@ -266,5 +262,9 @@ for name, season, episode in wanted:
 
 
 if got:
-    subprocess.call(["wget", "-q", "-O-", "http://dms.chad.org/switch/ping/" + os.environ["dmsid"] + "?note=got%20" + ",%20".join(urllib.parse.quote("%s (s%02de%02d)" % (n, s, e)) for n, s, e in sorted(got))])
+    # I watch for problems with my dead-man's switch. This could be noisy. I just
+    # look for periods of not working. 
+    # pass  dmsid=NNN  in environment.  Get it from http://dms.chad.org/
+    if "dmsid" in os.environ:
+        subprocess.call(["wget", "-q", "-O-", "http://dms.chad.org/switch/ping/" + os.environ["dmsid"] + "?note=got%20" + ",%20".join(urllib.parse.quote("%s (s%02de%02d)" % (n, s, e)) for n, s, e in sorted(got))])
 
