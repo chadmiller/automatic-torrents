@@ -56,7 +56,7 @@ logger = logging.getLogger("torrent-rename")
 logger.setLevel(logging.DEBUG)
 
 # This handler emails me anything that is an error or worse.
-mailhandler = BufferingSMTPHandler('localhost', 'cmiller@zippy.cornsilk.net', ['root@zippy.cornsilk.net'], 'torrent-rename abnormal events', 500)
+mailhandler = BufferingSMTPHandler('localhost', 'cmiller@zippy', ['root@zippy'], 'torrent-rename abnormal events', 500)
 mailhandler.setLevel(logging.INFO)
 logformatter = logging.Formatter("line%(lineno)d %(message)s")
 mailhandler.setFormatter(logformatter)
@@ -308,7 +308,7 @@ def reformat(filename):
 			container_pieces.append(piece)
 
 	basename = smart_title(" ".join(fragments)).strip("-")
-	dirs = os.listdir("/data/movies-and-television/torrents")
+	dirs = os.listdir("/data/%%media/sorted/torrents")
 	candidates = sorted((d for d in dirs if basename in d), key=lambda s: (-len(s), s))
 	
 	if candidates and candidates[0] != basename:
@@ -329,9 +329,9 @@ def reformat(filename):
 
 
 def rename(dummy, container, filenames):
-	assert container.startswith("/data/%downloaded-unsorted")
+	assert container.startswith("/data/%%media/unsorted")
 
-	unrooted_container = container[len("/data/%downloaded-unsorted")+1:]
+	unrooted_container = container[len("/data/%%media/unsorted")+1:]
 
 	imdbttid = None
 	nfo_file_contents = None
@@ -361,7 +361,7 @@ def rename(dummy, container, filenames):
 
 				src = os.path.join(container, filename)
 				# FIXME set dst with show name
-				dst = os.path.join("/data/movies-and-television/torrents", new_filename)
+				dst = os.path.join("/data/%%media/sorted/torrents", new_filename)
 
 				if extension not in kept_extensions:
 					continue
@@ -407,11 +407,11 @@ if doctest.testmod().failed > 0:
 	raise ValueError("Test errors")
 
 try:
-	os.path.walk("/data/%downloaded-unsorted", rename, None)
+	os.path.walk("/data/%%media/unsorted", rename, None)
 except Exception, ex:
 	logger.exception("failed to complete")
 	raise
 
 
-subprocess.call(["find", "/data/movies-and-television/torrents", "-type", "f", "-ctime", "+180", "-print", "-delete"])
-subprocess.call(["find", "/data/%downloaded-unsorted/", "-type", "f", "-links", "1", "-ctime", "+60", "-print", "-delete"])
+subprocess.call(["find", "/data/%%media/sorted/torrents", "-type", "f", "-ctime", "+180", "-print", "-delete"])
+subprocess.call(["find", "/data/%%media/unsorted", "-type", "f", "-links", "1", "-ctime", "+60", "-print", "-delete"])
