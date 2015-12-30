@@ -68,7 +68,7 @@ logger.addHandler(stdouthandler)
 atexit.register(logging.shutdown)
 
 
-quash = ("hdtv", "x264", "avc", "dvdrip", "brrip", "mpeg-4", "[vtv]", "xvid-", "480p", "720i", "720p", "1080i", "1080p", "ws", "pdtv", "4od", "dvdscr", "albiondean", "merry xmas", "bdrip", "repack", "bluray", "proper", "yify", "dvd", "complete", "dvdrip", "linkzkraze", "tvblinkz", "tvboom", "hdtv-", "webrip", "boxxx", "remastered", "www", "rarbg", "etrg", "uncut")
+quash = ("hdtv", "x264", "avc", "dvdrip", "brrip", "mpeg-4", "[vtv]", "xvid-", "480p", "720i", "720p", "1080i", "1080p", "ws", "pdtv", "4od", "dvdscr", "albiondean", "merry xmas", "bdrip", "repack", "bluray", "proper", "yify", "dvd", "complete", "dvdrip", "linkzkraze", "tvblinkz", "tvboom", "hdtv-", "webrip", "boxxx", "remastered", "www", "rarbg", "etrg", "uncut", "hdrip", "xvid", "internal", "preair")
 
 year = re.compile(r"\b((?:19|20)\d\d)\b")
 ep = re.compile(r"\b(?:S(\d\d?)E(\d\d?)|(\d\d?)x(\d\d?))\b", re.I)
