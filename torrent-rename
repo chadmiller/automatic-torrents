@@ -352,6 +352,7 @@ def rename(dummy, container, filenames):
 			imdbttid = int(unrooted_container[8:first_slash_position])
 		nfo_file_contents = """<tvshow>\n<id moviedb="imdb">tt{}</id>\n</tvshow>""".format(imdbttid)
 
+	renamed = list()
 	for filename in filenames:
 		try:
 			if os.path.isfile(os.path.join(container, filename)):
@@ -372,15 +373,18 @@ def rename(dummy, container, filenames):
 				dst = os.path.join("/data/%%media/sorted/torrents", new_filename)
 
 				if extension not in kept_extensions:
+					print("not extension", filename)
 					continue
 
 				if src == dst:
+					print("srcdst", src)
 					continue
 
 				if os.sep not in new_filename:
 					if os.path.exists(dst):
 						logger.debug("Weird file %s   (AND REMOVING!)", filename)
 						os.remove(dst)
+						print("weird", filename)
 						continue
 					else:
 						logger.debug("Just a file %s", new_filename)
@@ -398,17 +402,22 @@ def rename(dummy, container, filenames):
 								with open(nfo_file, "w") as f:
 									f.write(nfo_file_contents)
 									logger.debug("Wrote new tvshow nfo file near " + dst)
+						renamed.append(dst)
 						os.link(src, dst)
+						print((os.path.join(container, filename)))
 					except OSError, exc:
 						print(src, dst)
 						logger.warn("# couldn't link %s", (dst,))
 						raise
 						pass
+			else:
+				print("not file", filename)
 
 		except ConsistencyError, ex:
 			pass
 			#logger.warn("ignoring inconsistent name, %s", ex)
 			
+	return renamed
 
 import doctest
 if doctest.testmod().failed > 0:
@@ -420,6 +429,7 @@ except Exception, ex:
 	logger.exception("failed to complete")
 	raise
 
+print(rename(None, "/data/%%media/unsorted/The.Karate.Kid.2010.1080p.BluRay.x264.AC3-ETRG", ["The.Karate.Kid.2010.1080p.BluRay.x264.AC3-ETRG.mp4"]))
 
 subprocess.call(["find", "/data/%%media/sorted/torrents", "-type", "f", "-ctime", "+180", "-print", "-delete"])
 subprocess.call(["find", "/data/%%media/unsorted", "-type", "f", "-links", "1", "-ctime", "+60", "-print", "-delete"])

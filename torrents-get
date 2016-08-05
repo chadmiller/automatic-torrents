@@ -106,6 +106,11 @@ def search(show, season, episode, retry=5):
                         if not gross_filter_pattern.match(torrent_name):
                             continue
 
+                        if not verbose:
+                            if "years" in tdage.text or "months" in tdage.text:
+                                print(show, season, episode, tdage.text, "is too old")
+                                continue
+
                         if not perfect_filter_pattern.match(torrent_name):
                             politeprint("hrm, the name", torrent_name, "is not close enough to", perfect_filter_pattern.pattern)
                             continue
@@ -157,6 +162,23 @@ def next_ep_this_season(show, season, ep):
 def next_ep_next_season(show, season, ep):
     return (show,season+1, 1)
 
+def qualify_all_set(s1, s2):
+    for item in list(s1):
+        show, season, episode = item
+        year_match = re.search(r"(.*?)( \(\d\d\d\d\))", show)
+        if year_match:
+            short_name = year_match.group(1)
+            added_year = year_match.group(2)
+            for s in (s1, s2):
+                for sh, se, ep in set(s):
+                    if sh == short_name:
+                        print("requalify %s as %s" % ((sh, se, ep), (show, se, ep)))
+                        s.remove((sh, se, ep))
+                        s.add((show, se, ep))
+
+
+
+
 root = "/data/movies-and-television/torrents/"
 verbose = False
 
@@ -179,28 +201,14 @@ for dirpath, dirnames, filenames in os.walk(root):
             else:
                 pass
 
-
 try:
     want = set([ (sys.argv[1], int(sys.argv[2]), int(sys.argv[3])) ])
+    verbose = True
 except ValueError as exc:
     pass
 except IndexError as exc:
     pass
 
-
-def qualify_all_set(s1, s2):
-    for item in list(s1):
-        show, season, episode = item
-        year_match = re.search(r"(.*?)( \(\d\d\d\d\))", show)
-        if year_match:
-            short_name = year_match.group(1)
-            added_year = year_match.group(2)
-            for s in (s1, s2):
-                for sh, se, ep in set(s):
-                    if sh == short_name:
-                        print("requalify %s as %s" % ((sh, se, ep), (show, se, ep)))
-                        s.remove((sh, se, ep))
-                        s.add((show, se, ep))
 
 # Discover and qualify show names with years.
 qualify_all_set(want, have)
@@ -228,11 +236,17 @@ for showname, seriesnumber, episodenumber in want:
         old.add((showname, seriesnumber, episodenumber))
 
 # try to get new stuff we want
-wanted = sorted(list(want - have - old))   # we can append to this inside interation! Spooky.
+to_get = sorted(list(want - have - old))   # we can append to this inside interation! Spooky.
+
+
+
+if verbose:
+    for o in sorted(have): print("have {0}".format(o))
+    for o in sorted(to_get): print("search for {0}".format(o))
 
 got = set()
 new_have = list()
-for name, season, episode in wanted:
+for name, season, episode in to_get:
 
     magnet_link, imdb_id = search(name, season, episode)
 
@@ -244,7 +258,7 @@ for name, season, episode in wanted:
                 print("# Too many chained on. Aborting.")
                 continue
             new_have.append(n)
-            wanted.append(next_ep_this_season(name, season, episode))
+            to_get.append(next_ep_this_season(name, season, episode))
         got.add((name, season, episode))
         if verbose:
             print("# Enqueueing", name, season, episode)
