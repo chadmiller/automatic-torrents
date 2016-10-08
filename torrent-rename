@@ -1,5 +1,6 @@
 #!/usr/bin/python2
 # coding: UTF-8
+# vi: set noet sw=4 ts=4 nolist :
 
 import sys
 import os
@@ -109,72 +110,72 @@ def smart_title(s):
 	return " ".join(result).replace("Elmentary ", "Elementary ")
 
 
-def reformat(filename):
+def reformat(filename, path_prefix):
 	"""
 	Year always first because it's part of the name, then episode or season info.
 
-	>>> reformat('Welcome.to.Sweden.2014.S01E09.HDTV.XviD-AFG.avi')
+	>>> reformat('Welcome.to.Sweden.2014.S01E09.HDTV.XviD-AFG.avi', None)
 	('Welcome to Sweden (2014)/Welcome to Sweden (2014) (s01e09).avi', '.avi')
-	>>> reformat('Doctor Who (2005) (S40E05).mkv')
+	>>> reformat('Doctor Who (2005) (S40E05).mkv', None)
 	('Doctor Who (2005)/Doctor Who (2005) (s40e05).mkv', '.mkv')
-	>>> reformat('Rubicon (S01E05), Connect The Dots.avi')
+	>>> reformat('Rubicon (S01E05), Connect The Dots.avi', None)
 	('Rubicon/Rubicon (s01e05) Connect the Dots.avi', '.avi')
-	>>> reformat('Top Gear (S05E05) (2004-11-21).avi')
+	>>> reformat('Top Gear (S05E05) (2004-11-21).avi', None)
 	('Top Gear/Top Gear (2004-11-21) (s05e05).avi', '.avi')
-	>>> reformat('Food Inc (2008).avi')
+	>>> reformat('Food Inc (2008).avi', None)
 	('Food Inc (2008)/Food Inc (2008).avi', '.avi')
-	>>> reformat('Top Gear (S05E10) 2005-01-02, The Best Of Season 5.avi')
+	>>> reformat('Top Gear (S05E10) 2005-01-02, The Best Of Season 5.avi', None)
 	('Top Gear/Top Gear (2005-01-02) (s05e10) The Best of Season 5.avi', '.avi')
-	>>> reformat('Rubicon.S01E01.Pilot.HDTV.XviD-FQM.avi')
+	>>> reformat('Rubicon.S01E01.Pilot.HDTV.XviD-FQM.avi', None)
 	('Rubicon/Rubicon (s01e01) Pilot.avi', '.avi')
-	>>> reformat('Rubicon.S01E11.A.Good.Days.Work.HDTV.XviD-FQM.[VTV].avi')
+	>>> reformat('Rubicon.S01E11.A.Good.Days.Work.HDTV.XviD-FQM.[VTV].avi', None)
 	('Rubicon/Rubicon (s01e11) A Good Days Work.avi', '.avi')
-	>>> reformat("Rubicon (s01e11), A Good Day's Work.avi")
+	>>> reformat("Rubicon (s01e11), A Good Day's Work.avi", None)
 	("Rubicon/Rubicon (s01e11) A Good Day's Work.avi", '.avi')
-	>>> reformat("Doctor Who (2005) A Christmas Carol 2010 Special.mkv")
+	>>> reformat("Doctor Who (2005) A Christmas Carol 2010 Special.mkv", None)
 	('Doctor Who (2005)/Doctor Who (2005) A Christmas Carol 2010 Special.mkv', '.mkv')
-	>>> reformat("The.Direct.Article.1.avi")
+	>>> reformat("The.Direct.Article.1.avi", None)
 	('The Direct Article 1/The Direct Article 1.avi', '.avi')
-	>>> reformat("Dr. Horrible.Act.1.avi")
+	>>> reformat("Dr. Horrible.Act.1.avi", None)
 	('Dr Horrible Act 1/Dr Horrible Act 1.avi', '.avi')
-	>>> reformat("Justified Season 1 Episode 13 Bulletville.avi")
+	>>> reformat("Justified Season 1 Episode 13 Bulletville.avi", None)
 	('Justified/Justified (s01e13) Bulletville.avi', '.avi')
-	>>> reformat("Star Trek The Next Generation Season 3 Episode 21- Hollow Pursuits.avi")
+	>>> reformat("Star Trek The Next Generation Season 3 Episode 21- Hollow Pursuits.avi", None)
 	('Star Trek the Next Generation/Star Trek the Next Generation (s03e21) Hollow Pursuits.avi', '.avi')
-	>>> reformat("The.Colbert.Report.2012.04.11.Michelle.Obama.HDTV.XviD-FQM.[VTV].avi")
+	>>> reformat("The.Colbert.Report.2012.04.11.Michelle.Obama.HDTV.XviD-FQM.[VTV].avi", None)
 	('The Colbert Report/The Colbert Report (2012-04-11) Michelle Obama.avi', '.avi')
-	>>> reformat("Community Season 2, Episode 06 – Epidemiology - LinkzKraze.mp4")
+	>>> reformat("Community Season 2, Episode 06 – Epidemiology - LinkzKraze.mp4", None)
 	('Community/Community (s02e06) Epidemiology.mp4', '.mp4')
-	>>> reformat("glee.404.hdtv-lol.mp4")
+	>>> reformat("glee.404.hdtv-lol.mp4", None)
 	('Glee/Glee (s04e04).mp4', '.mp4')
-	>>> reformat("The Big Bang Theory 605 Hdtv-lol.mp4")
+	>>> reformat("The Big Bang Theory 605 Hdtv-lol.mp4", None)
 	('The Big Bang Theory/The Big Bang Theory (s06e05).mp4', '.mp4')
-	>>> reformat("Archer - 2E11 - Jeu Monegasque.mkv")
+	>>> reformat("Archer - 2E11 - Jeu Monegasque.mkv", None)
 	('Archer/Archer (s02e11) Jeu Monegasque.mkv', '.mkv')
-	>>> reformat("Burn.Notice.S06E11E12.HDTV.x264-2HD.[VTV].mp4")
+	>>> reformat("Burn.Notice.S06E11E12.HDTV.x264-2HD.[VTV].mp4", None)
 	('Burn Notice/Burn Notice (s06e11) (s06e12).mp4', '.mp4')
-	>>> reformat("Star Trek - The Next Generation- S01 E01+2-Encounter at Fairpoint.mp4")
+	>>> reformat("Star Trek - The Next Generation- S01 E01+2-Encounter at Fairpoint.mp4", None)
 	('Star Trek the Next Generation/Star Trek the Next Generation (s01e01) (s01e02) Encounter at Fairpoint.mp4', '.mp4')
-	>>> reformat('The.Powerpuff.Girls.S06.E07.Crazy.Mixed.Up.Puffs-Mizzen.In.Action-[boxXx].mkv')
+	>>> reformat('The.Powerpuff.Girls.S06.E07.Crazy.Mixed.Up.Puffs-Mizzen.In.Action-[boxXx].mkv', None)
 	('The Powerpuff Girls/The Powerpuff Girls (s06e07) Crazy Mixed Up Puffs-mizzen In Action.mkv', '.mkv')
-	>>> reformat('Rockford_Files-S03xE15-The_Trees_The_Bees_And_TT_Flowers_Part_2.avi')
+	>>> reformat('Rockford_Files-S03xE15-The_Trees_The_Bees_And_TT_Flowers_Part_2.avi', None)
 	('Rockford Files/Rockford Files (s03e15) The Trees the Bees and Tt Flowers Part 2.avi', '.avi')
-	>>> reformat('My Neighbor Totoro.mp4')
+	>>> reformat('My Neighbor Totoro.mp4', None)
 	('My Neighbor Totoro/My Neighbor Totoro.mp4', '.mp4')
-	>>> reformat('My Neighbor Totoro.srt')
+	>>> reformat('My Neighbor Totoro.srt', None)
 	('My Neighbor Totoro/My Neighbor Totoro.srt', '.srt')
-	>>> reformat('Arrested Development - S1 E 02 - Top Banana.avi')
+	>>> reformat('Arrested Development - S1 E 02 - Top Banana.avi', None)
 	('Arrested Development/Arrested Development (s01e02) Top Banana.avi', '.avi')
-	>>> reformat('My Neighbor Totoro.srt')
+	>>> reformat('My Neighbor Totoro.srt', None)
 	('My Neighbor Totoro/My Neighbor Totoro.srt', '.srt')
-	>>> reformat('Stargate.SG-1.S08E08.WS.DVDRip.XviD-RiVER.avi')
-	('Stargate Sg1/Stargate Sg1 (s08e08).avi', '.avi')
-	>>> reformat('Magnum P I 3x01,3x02 Did You See the Sunrise (1)&(2).avi')
+	>>> reformat('Magnum P I 3x01,3x02 Did You See the Sunrise (1)&(2).avi', None)
 	('Magnum P I/Magnum P I (s03e01) (s03e02) Did You See the Sunrise (1)&(2).avi', '.avi')
-	>>> reformat('penn.and.teller.fool.us.s02e01.phone.y.business.hdtv.x264.mp4')
+	>>> reformat('penn.and.teller.fool.us.s02e01.phone.y.business.hdtv.x264.mp4', None)
 	('Penn and Teller Fool Us/Penn and Teller Fool Us (s02e01) Phone Y Business.mp4', '.mp4')
-	>>> reformat('Sicario.2015.1080p.Bluray.DTS.x264-ETRG.mkv')
+	>>> reformat('Sicario.2015.1080p.Bluray.DTS.x264-ETRG.mkv', None)
 	('Sicario (2015)/Sicario (2015).mkv', '.mkv')
+	>>> reformat('Italian.srt', 'The Jungle Book 2016 1080p BluRay x264 DTS-JYK/Subs')
+	('The Jungle Book (2016)/Italian.srt', '.srt')
 	"""
 
 	already_dated = False
@@ -182,6 +183,11 @@ def reformat(filename):
 	fragments = list()
 	times = list()
 	basename, extension = os.path.splitext(filename)
+
+	is_language_file = (extension == ".srt" and path_prefix)
+
+	if is_language_file:
+		orig_filename, basename = filename, path_prefix
 
 	want_container = True
 	container_pieces = list()
@@ -329,6 +335,9 @@ def reformat(filename):
 		for time in sorted(times):
 			if time not in basename:
 				basename += " (" + time + ")"
+
+	if is_language_file:
+		return smart_title(" ".join(container_pieces)) + "/" + orig_filename, extension.lower()
 	
 	if want_container:
 		return smart_title(" ".join(container_pieces)) + "/" + basename + extension.lower(), extension.lower()
@@ -362,9 +371,9 @@ def rename(dummy, container, filenames):
 				if "sample" in filename.lower():
 					logger.debug("should remove %r", filename)
 					continue
-				new_filename, extension = reformat(filename)
+				new_filename, extension = reformat(filename, container)
 
-				consistency = reformat(os.path.basename(new_filename))[0]
+				consistency = reformat(os.path.basename(new_filename), container)[0]
 				if new_filename != consistency:
 					raise ConsistencyError(new_filename + " != " + consistency +" // " + filename)
 
