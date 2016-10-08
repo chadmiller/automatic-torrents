@@ -1,160 +1,71 @@
 #!/usr/bin/python3
-# coding: UTF-8
 
-import signal
-import sys
+import time
+from sys import argv
 import os
 import re
+import requests
 import urllib.parse
-import urllib.request
 import subprocess
 import bs4
-import socket
-import gzip
-from io import StringIO, BytesIO
-import time
+import logging
+
+logger = logging.getLogger(__name__)
+
+to_do_list = []   # (when, showtuple)
 
 
-class SearchEngineIsDumb(Exception): """Ugly flow-control for troublesome search sites."""
+def enqueue_magnet_link(magnet_link):
+    assert magnet_link.startswith("magnet:"), magnet_link
+    result = subprocess.run(["/usr/bin/deluge-console", "add %s" % magnet_link], stdout=subprocess.DEVNULL, timeout=10, check=True)
 
-def alarm(n):
-    pass
+def search(show, season, episode):
+    urlformat = "https://thepiratebay.org/search/%s/0/7/205"
 
+    search_phrase = "%s S%02dE%02d" % (show, season, episode)
+    url = urlformat % (urllib.parse.quote(search_phrase),)
+    r = requests.get(url)
 
-def politeprint(*args):
-    quashing = (r"""HTTP Error 404""",)
-    string = " ".join(str(s) for s in args)
-    for expr in quashing:
-        if re.match(expr, string):
-            return
-    print(string)
+    if "No hits. Try adding an asterisk in you search phrase." in r.text:
+        return
 
+    if "Database maintenance, please check back" in r.text:
+        logger.debug("Rescheduling %s %s %s for later.   %s", show, season, episode, url)
+        to_do_list.append((time.time() + (10*60), (show, season, episode)))
+        return
 
-urlformat = "https://kat.cr/usearch/%22{title}%22%20-yify%20seeds:{minimumseeders}%20verified:1%20season:{season}%20episode:{episode}%20category:tv/"
+    soup = bs4.BeautifulSoup(r.text, "lxml", from_encoding="UTF-8")
 
-def search(show, season, episode, retry=5):
-    show_titles = set()
-    show_titles.add(show)
-    show_titles.add(re.sub(r" \([12][9012]\d\d\)$", "", show))
+    table = soup.find("table", id="searchResult")
+    if not table:
+        logger.error("Didn't find a table in result. %r", r.text)
+        return
 
-    error_count = 0
-    while True:
-        try:
-            for title in show_titles:
+    for tr in table.find_all("tr", recursive=False):
 
-                url = urlformat.format(title=urllib.parse.quote(title), season=season, episode=episode, minimumseeders=20)
+        tds = tr.find_all("td")
+        if not tds:
+            logger.warn("Found no tds in tr  %r", tr)
+            continue
+        tdcategory, tdbody, tdseeder, tdleecher = tds
 
-                gross_filter_pattern = re.compile(r"(?i){showname}.*\b(?:s{season:02d}e{episode:02d}|{season}x{episode})\b".format(showname=r".*".join(re.split("[^a-zA-Z0-9]*", show)), season=season, episode=episode))
-                perfect_filter_pattern = re.compile(r"(?i)^{showname}(?:\W\d{{4}})?\W*\b(?:s{season:02d}e{episode:02d}|{season}x{episode})\b".format(showname=r"\W".join(show.split()), season=season, episode=episode))
+        if int(tdseeder.string) < 50:
+            logger.debug("Hoping for %s %s %s but only %s seeders.", show, season, episode, tdseeder.string)
+            continue
 
-                alarm(30)
-                req = urllib.request.Request(url, None, { "Accept-Encoding": "identity" })
-                try:
-                    response = urllib.request.urlopen(req, None, 10)
-                    assert response.code == 200
-                except urllib.request.URLError as exc:
-                    if hasattr(exc, "getcode") and exc.getcode() != 404:
-                        politeprint(exc)
-                        politeprint(dir(exc))
-                        raise SearchEngineIsDumb(exc)
-                    politeprint(str(exc), url)
-                    continue  # 404
-                except (socket.timeout, urllib.request.httplib.BadStatusLine, urllib.request.httplib.ssl.SSLError) as exc:
-                    raise SearchEngineIsDumb(exc)
+        if not tdbody.find_all("img", alt=("VIP", "Trusted", "Helper")):
+            logger.debug("Skipping entry by an untrusted joe.  %s", tdbody)
+            continue
 
-                if response.info().get('Content-Encoding') == 'gzip':
-                    buf = BytesIO(response.read())
-                    response = gzip.GzipFile(fileobj=buf)
+        r = ".{0,3}".join(map(str, show.split())) + r".{0,3}(?:[12]\d\d\d\b.{0,3})?" + ".{0,3}".join(map(str, [season, episode])) + ".{0,45}$"
+        if not re.match(r, tdbody.div.a.string, re.I):
+            logger.debug("Search result %s too loose match for %s.", tdbody.div.a.string, r,)
+            continue
 
-                response = response.read()
-
-                if re.search(r"<p>Your search «<b>\&quot;.*?\&quot;</b>» did not match any documents</p>".encode("UTF-8"), response):
-                    continue
-
-                try:
-                    soup = bs4.BeautifulSoup(response, "lxml", from_encoding="UTF-8")
-                except socket.timeout as exc:
-                    if retry < 1:
-                        raise SearchEngineIsDumb(exc)
-                    return search(show, season, episode, retry-1)
-
-                try:
-                    imdb_id = re.search(r"""<li><strong>IMDb link:</strong> <a class="plain" href="http://[^/]*/\?http://www.imdb.com/title/tt(\d+)/">\1</a>""".encode("UTF-8"), response).group(1)
-                except AttributeError:
-                    if verbose:
-                        politeprint("No IMDB info:", url)
-                    imdb_id = None
-
-                table = soup.find("table", attrs={"class":"data"})
-                if not table:
-                    print("Err: No table")
-                    print(soup.prettify())
-                    return None, None
-
-                count = 0
-                for tr in table.find_all("tr", recursive=False):
-                    try:
-                        tds = tr.find_all("td")
-                        if not tds:  # table header
-                            continue
-                        tddata, tdsize, tdfilecount, tdage, tdseedcount, teleechcount = tds
-                        torrent_name = tddata.find("a", attrs={"class":"cellMainLink"}).text
-
-                        if str(season) not in torrent_name or str(episode) not in torrent_name:
-                            continue  # easy squelch
-
-                        if not gross_filter_pattern.match(torrent_name):
-                            continue
-
-                        if not verbose:
-                            if "years" in tdage.text or "months" in tdage.text:
-                                print(show, season, episode, tdage.text, "is too old")
-                                continue
-
-                        if not perfect_filter_pattern.match(torrent_name):
-                            politeprint("hrm, the name", torrent_name, "is not close enough to", perfect_filter_pattern.pattern)
-                            continue
-
-                        if int(tdfilecount.text) > 7:
-                            politeprint("error:", torrent_name, "is too noisy. too many files", tdfilecount.text)
-                            continue
-
-                        magnet_link = tddata.find('a', title="Torrent magnet link")
-                        return magnet_link["href"], imdb_id
-
-                    except AttributeError as exc:
-                        raise SearchEngineIsDumb(exc)
-                        continue
-                    except ValueError as exc:
-                        print(url)
-                        print(tr)
-                        #print(tds)
-                        raise SearchEngineIsDumb(exc)
-
-                    count += 1
-
-                    #r = ".{0,3}".join(map(str, show.split())) + r".{0,3}(?:[12]\d\d\d\b.{0,3})?" + ".{0,3}".join(map(str, [season, episode])) + ".{0,45}$"
-                    #if not re.match(r, tdbody.div.a.string, re.I):
-                    #    if verbose:
-                    #        print("# search result %s too loose match for %s." % (tdbody.div.a.string, r,))
-                    #    continue
-
-                if count < 1:
-                    if verbose:
-                        politeprint("# search found nothing:", url)
-
-            if verbose:
-                politeprint("# Hoping for", show, season, episode, "but nothing found.")
-            return None, None
-
-        except SearchEngineIsDumb as exc:
-            error_count += 1
-            if error_count > 10:
-                logging.error("Search failed", exc)
-                print(exc)
-                return None, None
-            time.sleep(90)
-            pass
+        got.add(search_phrase)
+        logger.info("Enqueueing %s %s %s", show, season, episode)
+        enqueue_magnet_link(tdbody.find("a", recursive=False)["href"])
+        return
 
 def next_ep_this_season(show, season, ep):
     return (show, season, ep+1)
@@ -162,123 +73,77 @@ def next_ep_this_season(show, season, ep):
 def next_ep_next_season(show, season, ep):
     return (show,season+1, 1)
 
-def qualify_all_set(s1, s2):
-    for item in list(s1):
-        show, season, episode = item
-        year_match = re.search(r"(.*?)( \(\d\d\d\d\))", show)
-        if year_match:
-            short_name = year_match.group(1)
-            added_year = year_match.group(2)
-            for s in (s1, s2):
-                for sh, se, ep in set(s):
-                    if sh == short_name:
-                        print("requalify %s as %s" % ((sh, se, ep), (show, se, ep)))
-                        s.remove((sh, se, ep))
-                        s.add((show, se, ep))
+got = set()
 
-
-
-
-root = "/data/movies-and-television/torrents/"
-verbose = False
-
-# discover what we have on disk
-have = set()
-want = set()
-for dirpath, dirnames, filenames in os.walk(root):
-    for filename in filenames:
-        match = re.match(r"^(.*?) \(s(\d\d)e(\d\d)-(\d\d)\)", filename)
-        if match:
-            have.add((match.group(1), int(match.group(2)), int(match.group(3))))
-            want.add(next_ep_this_season(match.group(1), int(match.group(2)), int(match.group(4))))
-            want.add(next_ep_next_season(match.group(1), int(match.group(2)), int(match.group(4))))
-        else:
-            match = re.match(r"^(.*?) \(s(\d\d)e(\d\d)\)", filename)
+def discover(root):
+    # discover what we have on disk
+    have = set()
+    want = set()
+    for dirpath, dirnames, filenames in os.walk(root):
+        for filename in filenames:
+            match = re.match(r"^(.*?) \(s(\d\d)e(\d\d)-(\d\d)\)", filename)
             if match:
                 have.add((match.group(1), int(match.group(2)), int(match.group(3))))
-                want.add(next_ep_this_season(match.group(1), int(match.group(2)), int(match.group(3))))
-                want.add(next_ep_next_season(match.group(1), int(match.group(2)), int(match.group(3))))
+                want.add(next_ep_this_season(match.group(1), int(match.group(2)), int(match.group(4))))
+                want.add(next_ep_next_season(match.group(1), int(match.group(2)), int(match.group(4))))
             else:
-                pass
+                match = re.match(r"^(.*?) \(s(\d\d)e(\d\d)\)", filename)
+                if match:
+                    have.add((match.group(1), int(match.group(2)), int(match.group(3))))
+                    want.add(next_ep_this_season(match.group(1), int(match.group(2)), int(match.group(3))))
+                    want.add(next_ep_next_season(match.group(1), int(match.group(2)), int(match.group(3))))
+                else:
+                    pass
 
-try:
-    want = set([ (sys.argv[1], int(sys.argv[2]), int(sys.argv[3])) ])
-    verbose = True
-except ValueError as exc:
-    pass
-except IndexError as exc:
-    pass
+    # discover what we are already downloading
+    p = subprocess.Popen(["/usr/bin/deluge-console", "info"], stdout=subprocess.PIPE)
+    for line in p.stdout:
+        line = line.decode("UTF-8")
+        if not line.startswith("Name: "):
+            continue
+        for i in want:
+            if re.search(".{1,3}".join(map(str, tuple(i[0].split())+i[1:])), line, re.I):
+                #print "# want", i, "but I think I'm already downloading", line,
+                have.add(i)
 
+    old = set()
+    for showname, seriesnumber, episodenumber in want:
+        if len([1 for h in have if h[0] == showname and h > (showname, seriesnumber, episodenumber)]) > 3:
+            old.add((showname, seriesnumber, episodenumber))
 
-# Discover and qualify show names with years.
-qualify_all_set(want, have)
-qualify_all_set(have, want)
+    wanted = want - have
 
-alarm(30)
-# discover what we are already downloading
-p = subprocess.Popen(["/usr/bin/deluge-console", "info"], stdout=subprocess.PIPE)
-for line in p.stdout:
-    if not line.startswith(b"Name: "):
-        continue
-    for i in want:
-        want_match_expr = rb"(?i)^Name: " + b"[^a-zA-Z0-9]".join(tuple(i[0].encode("UTF-8").split())) + r".*\bs?\d?{}e?x?0?{}".format(i[1], i[2]).encode("UTF-8")
-
-        if re.search(want_match_expr, line, re.I):
-            #print("# want", i, "but I think I'm already downloading", line,)
-            have.add(i)
-            break
-
-alarm(0)
-
-old = set()
-for showname, seriesnumber, episodenumber in want:
-    if len([1 for h in have if h[0] == showname and h > (showname, seriesnumber, episodenumber)]) > 3:
-        old.add((showname, seriesnumber, episodenumber))
-
-# try to get new stuff we want
-to_get = sorted(list(want - have - old))   # we can append to this inside interation! Spooky.
+    return wanted - old
 
 
+def process_wanted(wanted):
+    for i, (name, season, episode) in enumerate(wanted):
+        to_do_list.append((time.time() + (i*20), (name, season, episode)))
 
-if verbose:
-    for o in sorted(have): print("have {0}".format(o))
-    for o in sorted(to_get): print("search for {0}".format(o))
+    start = time.time()
 
-got = set()
-new_have = list()
-for name, season, episode in to_get:
+    while to_do_list and time.time() < (start + 60*60*8):
+        to_do_list.sort()
+        while to_do_list and to_do_list[0][0] < time.time():
+            when, nse = to_do_list.pop(0)
+            search(nse[0], nse[1], nse[2])
+        time.sleep(5)
 
-    magnet_link, imdb_id = search(name, season, episode)
-
-    if magnet_link:
-        n = next_ep_this_season(name, season, episode)
-        if n not in have:
-
-            if len(new_have) > 10:
-                print("# Too many chained on. Aborting.")
-                continue
-            new_have.append(n)
-            to_get.append(next_ep_this_season(name, season, episode))
-        got.add((name, season, episode))
-        if verbose:
-            print("# Enqueueing", name, season, episode)
-
-        alarm(30)
-        if imdb_id:
-            deluge_add_cmd = ["/usr/bin/deluge-console", "add -p /data/%%downloaded-unsorted/imdb-tt%s %s" % (imdb_id.strip(), magnet_link,)]
-        else:
-            deluge_add_cmd = ["/usr/bin/deluge-console", "add %s" % (magnet_link,)]
-        p = subprocess.Popen(deluge_add_cmd, stdout=None, stderr=None)
-        ret = p.wait()
-        if ret != 0:
-            print("adding torrent ret", ret, ", for", deluge_add_cmd)
-        alarm(0)
+    if got and "dmsid" in os.environ:
+        requests.get("http://dms.chad.org/switch/ping/{}?note=got%20".format(os.environ["dmsid"]) + ",%20".join(urllib.parse.quote("%s (s%02de%02d)" % (n, s, e)) for n, s, e in sorted(got)))
 
 
-if got:
-    # I watch for problems with my dead-man's switch. This could be noisy. I just
-    # look for periods of not working. 
-    # pass  dmsid=NNN  in environment.  Get it from http://dms.chad.org/
-    if "dmsid" in os.environ:
-        subprocess.call(["wget", "-q", "-O-", "http://dms.chad.org/switch/ping/" + os.environ["dmsid"] + "?note=got%20" + ",%20".join(urllib.parse.quote("%s (s%02de%02d)" % (n, s, e)) for n, s, e in sorted(got))])
+if __name__ == "__main__":
 
+    logging.basicConfig(level=logging.ERROR)
+    logger.setLevel(logging.DEBUG)
+
+    if len(argv) == 2:
+        wanted = discover(argv[1])
+    elif len(argv) == 5:
+        root = argv[1]
+        wanted = { (argv[2], int(argv[3]), int(argv[4]),) }
+    else:
+        raise ValueError("expected params, either of\n  dir\n  dir showname seasonnumber episodenumber")
+
+    process_wanted(wanted)
